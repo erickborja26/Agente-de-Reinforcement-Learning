@@ -36,6 +36,7 @@ un **Hidden Markov Model** para enriquecer la representación del estado del mer
 
 ## 🧠 Arquitectura del sistema
 
+```bash
 Fuentes de Datos
 │
 ├── Precios (Yahoo Finance - EPU)
@@ -52,7 +53,7 @@ Estado aumentado (features + probabilidades HMM)
 Agente de Reinforcement Learning (DQN)
 ↓
 Decisiones: Buy / Sell / Hold
-
+```
 
 ---
 
@@ -97,6 +98,7 @@ Decisiones: Buy / Sell / Hold
 
 ## 📁 Estructura del proyecto
 
+```bash
 Agente-de-Reinforcement-Learning/
 ├─ src/ # Código fuente
 │ ├─ data/ # Ingesta de datos
@@ -112,6 +114,7 @@ Agente-de-Reinforcement-Learning/
 ├─ requirements.txt
 ├─ .gitignore
 └─ README.md
+```
 
 ## ⚙️ Instalación y entorno
 
