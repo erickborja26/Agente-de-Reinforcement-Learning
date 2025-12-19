@@ -1,0 +1,28 @@
+# Core
+numpy>=1.26
+pandas>=2.1
+requests>=2.31
+python-dotenv>=1.0
+openpyxl>=3.1
+
+# Data / Finance
+yfinance>=0.2.40
+
+# ML / HMM
+scikit-learn>=1.4
+hmmlearn>=0.3.2
+
+# RL
+gymnasium>=0.29
+stable-baselines3>=2.3.0
+torch>=2.2
+
+# Plots (opcional, pero útil)
+matplotlib>=3.8
+
+# Wrapper BCRP (opcional)
+bcrpy>=0.2
+
+# Sentimiento con Transformers (opcional)
+transformers>=4.40
+sentencepiece>=0.2
