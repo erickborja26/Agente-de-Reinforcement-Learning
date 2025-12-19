@@ -1,0 +1,65 @@
+# =========================
+# Python / Entornos virtuales
+# =========================
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# =========================
+# Variables de entorno (API keys)
+# =========================
+.env
+.env.*
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Datos (NO subir datos crudos ni cache)
+# =========================
+data/raw/
+data/interim/
+data/processed/
+
+# Si quieres versionar solo un README dentro de data
+!data/README.md
+
+# =========================
+# Cache de APIs (Alpha Vantage)
+# =========================
+data/**/news_cache/
+data/**/responses/
+data/**/daily/
+
+# =========================
+# Modelos entrenados / artifacts
+# =========================
+artifacts/
+models/
+*.pkl
+*.joblib
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# OS / IDE
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# Build / distribuciones
+# =========================
+build/
+dist/
+*.egg-info/
