@@ -45,10 +45,11 @@ class TradingEnv(gym.Env):
 
         target_pos = {0: self.position, 1: 1, 2: 0}[int(action)]
         turnover = abs(target_pos - self.position)
+        turnover_penalty = 0.0001 * turnover
         cost = turnover * self.fee
         self.position = target_pos
 
-        reward = (self.position * ret) - cost
+        reward = (self.position * ret) - cost - turnover_penalty
         self.equity *= (1.0 + reward)
 
         info = {"equity": self.equity, "position": self.position}
