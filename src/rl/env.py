@@ -3,6 +3,15 @@ import gymnasium as gym
 from gymnasium import spaces
 
 class TradingEnv(gym.Env):
+    """
+    Acciones:
+      0 = Hold
+      1 = Buy  (posición long +1)
+      2 = Sell (posición short -1)
+    Reward = pos * retorno - costo_transacción
+    """
+    metadata = {"render_modes": []}
+
     def __init__(self, data, obs_cols, price_col="close", fee=0.0005):
         super().__init__()
         self.data = data
@@ -10,9 +19,10 @@ class TradingEnv(gym.Env):
         self.price_col = price_col
         self.fee = fee
 
-        self.action_space = spaces.Discrete(3)  # 0 hold, 1 long, 2 short
+        self.action_space = spaces.Discrete(3)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf,
                                             shape=(len(obs_cols),), dtype=np.float32)
+
         self.reset()
 
     def reset(self, seed=None, options=None):
@@ -26,11 +36,12 @@ class TradingEnv(gym.Env):
         return self.data.iloc[self.t][self.obs_cols].values.astype(np.float32)
 
     def step(self, action):
-        prev = float(self.data.iloc[self.t][self.price_col])
+        prev_price = float(self.data.iloc[self.t][self.price_col])
         self.t += 1
         terminated = self.t >= (len(self.data) - 1)
-        curr = float(self.data.iloc[self.t][self.price_col])
-        ret = (curr / prev) - 1.0
+        curr_price = float(self.data.iloc[self.t][self.price_col])
+
+        ret = (curr_price / prev_price) - 1.0
 
         target_pos = {0: self.position, 1: 1, 2: -1}[int(action)]
         turnover = abs(target_pos - self.position)

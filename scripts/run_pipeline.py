@@ -1,78 +1,125 @@
+import sys
+from pathlib import Path
+
+# Asegura que el root del proyecto esté en sys.path (para imports de src)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pandas as pd
 
 from src.config import settings
-from src.data.yahoo import load_yahoo_close
-from data.vix_csv import load_vix_csv
-from src.data.bcrp import load_bcrp_api
-from src.data.alphavantage_news import fetch_news_sentiment, news_to_daily_sentiment
-from src.features.features import add_price_features, build_master_df
-from src.hmm.hmm_regime import fit_hmm
-from src.rl.train import train_dqn, run_policy, summarize
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
+from src.data.build_dataset import build_dataset
+from src.hmm.hmm_regime import fit_hmm_regimes
+from src.features.scaling import scale_columns
+from src.rl.train import train_dqn
+from src.rl.eval import evaluate
+from src.utils.io import ensure_dir, save_joblib, save_csv
 
 def main():
-    if not settings.av_api_key:
-        raise RuntimeError("Falta ALPHAVANTAGE_API_KEY en tu entorno (.env).")
-
-    # 1) Precios EPU
-    price = load_yahoo_close(settings.ticker, settings.start, settings.end)
-
-    # 2) Macro Perú (ejemplos; ajusta series y rango)
-    # Estructura BCRPData GET :contentReference[oaicite:16]{index=16}
-    tc = load_bcrp_api("PN01207PM", "2018-1", "2025-12")     # tipo de cambio mensual (ejemplo)
-    ipc = load_bcrp_api("PN01271PM", "2018-1", "2025-12")    # IPC mensual (ejemplo)
-    macro = tc.join(ipc, how="outer")
-
-    # 3) CSV vol
-    vol = load_vix_csv("data/raw/volatilidad_vix.csv")
-
-    # 4) Alpha Vantage News & Sentiment (ticker=EPU, topics opcional) :contentReference[oaicite:17]{index=17}
-    payload = fetch_news_sentiment(
-        base_url=settings.av_base_url,
-        api_key=settings.av_api_key,
-        tickers=settings.ticker,
-        topics=settings.av_topics,
-        time_from=pd.Timestamp(settings.start),
-        time_to=pd.Timestamp(settings.end),
-        sort=settings.av_sort,
-        limit=settings.av_limit,
+    # 1) Construir dataset (4 fuentes)
+    df = build_dataset(
+        ticker=settings.ticker,
+        start=settings.start,
+        end=settings.end,
+        vix_csv_path=settings.vix_csv_path,
+        wb_country=settings.wb_country,
+        wb_indicators=settings.wb_indicators,
+        av_base_url=settings.alphavantage_base_url,
+        av_api_key=settings.alphavantage_api_key,
+        av_topics=settings.alphavantage_topics,
+        av_sort=settings.alphavantage_sort,
+        av_limit=settings.alphavantage_limit,
+        av_sleep_sec=settings.alphavantage_sleep_sec,
+        cache_dir=settings.cache_dir,
     )
-    sent = news_to_daily_sentiment(payload, target_ticker=settings.ticker)
 
-    # Merge + features
-    price_f = add_price_features(price)
-    df = build_master_df(price_f, macro, vol, sent)
+    # Features base (sin HMM) – usa macro WB + VIX + sentiment + features de precio
+    base_cols = ["ret", "vol_20", "mom_5"] + settings.wb_indicators + ["vix", "sentiment"]
+    df = df.dropna(subset=base_cols).copy()
 
-    # Features base (sin HMM)
-    base_cols = ["ret","vol_20","mom_5","PN01207PM","PN01271PM","vol","sentiment"]
-    df = df.dropna(subset=base_cols)
+    # 2) HMM
+    hmm_res = fit_hmm_regimes(df, feature_cols=base_cols, n_states=settings.hmm_states, seed=settings.hmm_seed)
+    df_hmm = hmm_res.df
 
-    # Split temporal
-    split = int(len(df) * 0.8)
-    train_df, test_df = df.iloc[:split].copy(), df.iloc[split:].copy()
+    # Imprimir lo pedido: transición y emisión (medias)
+    print("\n=== HMM Transition Matrix ===")
+    print(hmm_res.transition)
+
+    print("\n=== HMM Emission Means (scaled-space means) ===")
+    print(hmm_res.emission_means)
+
+    print("\n=== HMM State Labels (por retorno medio) ===")
+    print(hmm_res.state_labels)
+
+    # 3) Split train/test
+    split = int(len(df_hmm) * settings.rl_train_ratio)
+    train_df = df_hmm.iloc[:split].copy()
+    test_df = df_hmm.iloc[split:].copy()
+
+    # 4) Escalado para RL (solo columnas base; hmm_p* se dejan tal cual)
+    scaled = scale_columns(train_df, test_df, cols=base_cols)
+    train_s = scaled.train_df
+    test_s = scaled.test_df
+
+    # Observaciones RL
+    obs_nohmm = base_cols
+    obs_hmm = base_cols + [f"hmm_p{k}" for k in range(settings.hmm_states)]
+
+    # 5) Entrenar DQN con/sin HMM
+    print("\nEntrenando DQN + HMM ...")
+    model_hmm = train_dqn(
+        train_s, obs_hmm,
+        timesteps=settings.rl_timesteps,
+        seed=settings.rl_seed,
+        fee=settings.rl_fee
+    )
+
+    print("Entrenando DQN sin HMM ...")
+    model_no = train_dqn(
+        train_s, obs_nohmm,
+        timesteps=settings.rl_timesteps,
+        seed=settings.rl_seed,
+        fee=settings.rl_fee
+    )
+
+    # 6) Evaluación (Sharpe, CumReturn, MaxDD) con vs sin HMM
+    eval_hmm = evaluate(model_hmm, test_s, obs_hmm, fee=settings.rl_fee)
+    eval_no = evaluate(model_no, test_s, obs_nohmm, fee=settings.rl_fee)
+
+    results = pd.DataFrame({
+        "DQN + HMM": eval_hmm["metrics"],
+        "DQN sin HMM": eval_no["metrics"]
+    }).T
+
+    print("\n=== RESULTADOS (TEST) ===")
+    print(results)
+
+    # 7) Guardar artifacts
+    ensure_dir(settings.artifacts_dir)
+    ensure_dir(str(Path(settings.artifacts_dir) / "scalers"))
+    ensure_dir(str(Path(settings.artifacts_dir) / "hmm"))
+    ensure_dir(str(Path(settings.artifacts_dir) / "rl"))
+
+    # métricas y equity
+    save_csv(results, str(Path(settings.artifacts_dir) / "metrics.csv"))
+    eval_hmm["equity"].to_csv(str(Path(settings.artifacts_dir) / "equity_hmm.csv"))
+    eval_no["equity"].to_csv(str(Path(settings.artifacts_dir) / "equity_nohmm.csv"))
 
     # HMM
-    df_hmm, hmm, scaler = fit_hmm(df, base_cols, n_states=3)
-    train_hmm, test_hmm = df_hmm.iloc[:split].copy(), df_hmm.iloc[split:].copy()
+    save_csv(hmm_res.transition, str(Path(settings.artifacts_dir) / "hmm" / "transition.csv"), index=False)
+    save_csv(hmm_res.emission_means, str(Path(settings.artifacts_dir) / "hmm" / "emission_means.csv"), index=False)
+    save_joblib(hmm_res.model, str(Path(settings.artifacts_dir) / "hmm" / "hmm_model.joblib"))
+    save_joblib(hmm_res.scaler, str(Path(settings.artifacts_dir) / "hmm" / "hmm_scaler.joblib"))
 
-    hmm_cols = base_cols + ["hmm_p0","hmm_p1","hmm_p2"]
-    nohmm_cols = base_cols
+    # scaler RL
+    save_joblib(scaled.scaler, str(Path(settings.artifacts_dir) / "scalers" / "rl_scaler.joblib"))
 
-    # RL: con HMM
-    model_hmm = train_dqn(train_hmm, hmm_cols, timesteps=50_000)
-    eq_hmm = run_policy(model_hmm, test_hmm, hmm_cols)
+    # RL models (SB3)
+    model_hmm.save(str(Path(settings.artifacts_dir) / "rl" / "dqn_hmm"))
+    model_no.save(str(Path(settings.artifacts_dir) / "rl" / "dqn_nohmm"))
 
-    # RL: sin HMM
-    model_no = train_dqn(train_df, nohmm_cols, timesteps=50_000)
-    eq_no = run_policy(model_no, test_df, nohmm_cols)
-
-    print("Resultados (test):")
-    print(pd.DataFrame({"DQN+HMM": summarize(eq_hmm), "DQN sin HMM": summarize(eq_no)}).T)
+    print(f"\nArtifacts guardados en: {Path(settings.artifacts_dir).resolve()}")
 
 if __name__ == "__main__":
     main()
