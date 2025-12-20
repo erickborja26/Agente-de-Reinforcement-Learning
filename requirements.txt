@@ -27,7 +27,7 @@ bcrpy>=0.2
 transformers>=4.40
 sentencepiece>=0.2
 
-seaborn>=0.14
+seaborn>=0.13.2
 
 # Dashboard
 streamlit>=1.28
