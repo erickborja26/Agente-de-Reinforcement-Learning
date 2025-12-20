@@ -43,7 +43,7 @@ class TradingEnv(gym.Env):
 
         ret = (curr_price / prev_price) - 1.0
 
-        target_pos = {0: self.position, 1: 1, 2: -1}[int(action)]
+        target_pos = {0: self.position, 1: 1, 2: 0}[int(action)]
         turnover = abs(target_pos - self.position)
         cost = turnover * self.fee
         self.position = target_pos

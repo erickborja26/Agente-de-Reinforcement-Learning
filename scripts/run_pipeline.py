@@ -32,6 +32,8 @@ def main():
         av_limit=settings.alphavantage_limit,
         av_sleep_sec=settings.alphavantage_sleep_sec,
         cache_dir=settings.cache_dir,
+        processed_dir=settings.processed_dir,
+        save_name="master_df.csv"
     )
 
     # Features base (sin HMM) – usa macro WB + VIX + sentiment + features de precio
@@ -61,6 +63,17 @@ def main():
     scaled = scale_columns(train_df, test_df, cols=base_cols)
     train_s = scaled.train_df
     test_s = scaled.test_df
+
+    # Baseline Buy & Hold en test
+    test_prices = test_s["close"].copy()
+    bh_eq = (test_prices / test_prices.iloc[0]).rename("equity")
+    bh_metrics = {
+        "Cumulative Return": float(bh_eq.iloc[-1] - 1.0),
+        "Sharpe": float((bh_eq.pct_change().mean() / bh_eq.pct_change().std()) * (252**0.5)),
+        "Max Drawdown": float(((bh_eq / bh_eq.cummax()) - 1.0).min()),
+    }
+    print("\n=== Baseline Buy&Hold (TEST) ===")
+    print(bh_metrics)
 
     # Observaciones RL
     obs_nohmm = base_cols

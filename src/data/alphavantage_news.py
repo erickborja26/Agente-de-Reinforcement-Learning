@@ -75,7 +75,12 @@ def payload_to_daily_sentiment(payload: Dict, ticker: str) -> pd.DataFrame:
 
     df = pd.DataFrame(rows, columns=["date", "sentiment"]).dropna()
     df = df.set_index("date").sort_index()
-    return df.groupby(level=0).mean()
+    
+    daily = df.groupby(level=0).mean()
+    # CLIP para evitar outliers que rompan HMM/RL
+    daily["sentiment"] = daily["sentiment"].clip(-1.0, 1.0)
+    
+    return daily
 
 def fetch_daily_sentiment_with_cache(
     base_url: str,

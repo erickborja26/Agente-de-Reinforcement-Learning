@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 from .yahoo import load_yahoo_close
 from .worldbank import fetch_world_bank_macro
@@ -21,6 +22,8 @@ def build_dataset(
     av_limit: int,
     av_sleep_sec: float,
     cache_dir: str,
+    processed_dir: str,
+    save_name: str = "master_df.csv"
 ) -> pd.DataFrame:
     """
     Devuelve DF diario unificado con:
@@ -51,10 +54,25 @@ def build_dataset(
 
     df = build_master_df(price_f, macro, vix, sent)
 
+    # Sentiment limpio (si no hay data, queda 0)
+    df["sentiment"] = (
+        df["sentiment"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .clip(-1.0, 1.0)
+    )
+
     # sentimiento neutral si no hubo data
     if "sentiment" not in df.columns:
         df["sentiment"] = 0.0
     df["sentiment"] = df["sentiment"].fillna(0.0)
 
     df = df.replace([np.inf, -np.inf], np.nan).ffill().dropna()
+    
+    # ✅ GUARDAR DF UNIFICADO (4 fuentes)
+    Path(processed_dir).mkdir(parents=True, exist_ok=True)
+    out_path = Path(processed_dir) / save_name
+    df.to_csv(out_path, index=True)
+    print(f"[OK] DataFrame unificado guardado en: {out_path.resolve()}")
+    
     return df

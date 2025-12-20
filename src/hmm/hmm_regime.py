@@ -19,9 +19,10 @@ def fit_hmm_regimes(df: pd.DataFrame, feature_cols: List[str], n_states: int = 3
 
     model = GaussianHMM(
         n_components=n_states,
-        covariance_type="full",
-        n_iter=500,
-        random_state=seed
+        covariance_type="diag",
+        n_iter=800,
+        random_state=seed,
+        min_covar=1e-4
     )
     model.fit(X)
 
