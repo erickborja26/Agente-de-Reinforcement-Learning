@@ -42,7 +42,7 @@ def build_dataset(
     sent = fetch_daily_sentiment_with_cache(
         base_url=av_base_url,
         api_key=av_api_key,
-        ticker=ticker,
+        ticker="",
         start=start,
         end=end,
         topics=av_topics,
@@ -68,6 +68,14 @@ def build_dataset(
     df["sentiment"] = df["sentiment"].fillna(0.0)
 
     df = df.replace([np.inf, -np.inf], np.nan).ffill().dropna()
+    
+    # si no hay noticias => 0
+    df["sentiment"] = df["sentiment"].fillna(0.0)
+    df["news_count"] = df.get("news_count", 0).fillna(0)
+    
+    # rolling 7 días (más estable para RL)
+    df["sentiment_7d"] = df["sentiment"].rolling(7, min_periods=1).mean()
+    df["news_7d"] = df["news_count"].rolling(7, min_periods=1).sum()
     
     # ✅ GUARDAR DF UNIFICADO (4 fuentes)
     Path(processed_dir).mkdir(parents=True, exist_ok=True)

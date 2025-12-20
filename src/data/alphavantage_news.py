@@ -33,6 +33,8 @@ def fetch_news_sentiment_payload(
         "sort": sort,
         "limit": str(limit),
     }
+    if ticker:
+        params["tickers"] = ticker
     if topics:
         params["topics"] = topics
 
@@ -76,10 +78,10 @@ def payload_to_daily_sentiment(payload: Dict, ticker: str) -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["date", "sentiment"]).dropna()
     df = df.set_index("date").sort_index()
     
-    daily = df.groupby(level=0).mean()
-    # CLIP para evitar outliers que rompan HMM/RL
-    daily["sentiment"] = daily["sentiment"].clip(-1.0, 1.0)
-    
+    daily = df.groupby(level=0).agg(
+        sentiment=("sentiment", "mean"),
+        news_count=("sentiment", "size")
+    )
     return daily
 
 def fetch_daily_sentiment_with_cache(

@@ -36,12 +36,16 @@ def main():
         save_name="master_df.csv"
     )
 
-    # Features base (sin HMM) – usa macro WB + VIX + sentiment + features de precio
-    base_cols = ["ret", "vol_20", "mom_5"] + settings.wb_indicators + ["vix", "sentiment"]
-    df = df.dropna(subset=base_cols).copy()
+    # Features para RL (sí incluye todo)
+    base_cols_rl = ["ret", "vol_20", "mom_5"] + settings.wb_indicators + ["vix", "sentiment_7d", "news_7d"]
+    df = df.dropna(subset=base_cols_rl).copy()
+    
+    # Features para HMM (solo precio + volatilidad, como pide el enunciado)
+    hmm_cols = ["ret", "vol_20", "mom_5", "vix"]
+    df = df.dropna(subset=hmm_cols).copy()
 
     # 2) HMM
-    hmm_res = fit_hmm_regimes(df, feature_cols=base_cols, n_states=settings.hmm_states, seed=settings.hmm_seed)
+    hmm_res = fit_hmm_regimes(df, feature_cols=hmm_cols, n_states=settings.hmm_states, seed=settings.hmm_seed)
     df_hmm = hmm_res.df
 
     # Imprimir lo pedido: transición y emisión (medias)
@@ -53,6 +57,9 @@ def main():
 
     print("\n=== HMM State Labels (por retorno medio) ===")
     print(hmm_res.state_labels)
+    
+    print("\n=== HMM state counts ===")
+    print(df_hmm["hmm_state"].value_counts(normalize=True))
 
     # 3) Split train/test
     split = int(len(df_hmm) * settings.rl_train_ratio)
@@ -60,9 +67,13 @@ def main():
     test_df = df_hmm.iloc[split:].copy()
 
     # 4) Escalado para RL (solo columnas base; hmm_p* se dejan tal cual)
-    scaled = scale_columns(train_df, test_df, cols=base_cols)
+    scaled = scale_columns(train_df, test_df, cols=base_cols_rl)
     train_s = scaled.train_df
     test_s = scaled.test_df
+
+    # Observaciones RL
+    obs_nohmm = base_cols_rl
+    obs_hmm = base_cols_rl + [f"hmm_p{k}" for k in range(settings.hmm_states)]
 
     # Baseline Buy & Hold en test
     test_prices = test_s["close"].copy()
@@ -74,10 +85,6 @@ def main():
     }
     print("\n=== Baseline Buy&Hold (TEST) ===")
     print(bh_metrics)
-
-    # Observaciones RL
-    obs_nohmm = base_cols
-    obs_hmm = base_cols + [f"hmm_p{k}" for k in range(settings.hmm_states)]
 
     # 5) Entrenar DQN con/sin HMM
     print("\nEntrenando DQN + HMM ...")
