@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 import os
 from typing import Optional
+import joblib
 
 # Importar utilidades
 from utils import (
@@ -54,6 +55,121 @@ DATA_PROCESSED = PROJECT_ROOT / "data" / "processed" / "master_df.csv"
 REPORTS_DIR = PROJECT_ROOT / "reports" / "figures"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 RESULTS_EXCEL = PROJECT_ROOT / "resultados_10_modelos_financieros.xlsx"
+HMM_TIMESERIES = ARTIFACTS_DIR / "hmm" / "hmm_probabilities_timeseries.csv"
+RL_MODEL_HMM = ARTIFACTS_DIR / "rl" / "dqn_hmm.zip"
+RL_SCALER_PATH = ARTIFACTS_DIR / "scalers" / "rl_scaler.joblib"
+ARTIFACT_IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+
+BASE_FEATURES = [
+    "ret",
+    "vol_20",
+    "mom_5",
+    "FP.CPI.TOTL.ZG",
+    "FR.INR.RINR",
+    "PA.NUS.FCRF",
+    "vix",
+    "sentiment_7d",
+    "news_7d"
+]
+HMM_PROB_COLS = [f"hmm_p{k}" for k in range(3)]
+ACTION_LABELS = {
+    0: "Hold (mantener)",
+    1: "Buy (ir long)",
+    2: "Sell (cerrar/neutral)"
+}
+
+
+@st.cache_data
+def load_hmm_probabilities(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path, parse_dates=["Date"]).set_index("Date").sort_index()
+        return df
+    except Exception as exc:
+        st.error(f"No se pudo cargar las probabilidades HMM: {exc}")
+        return None
+
+
+@st.cache_data
+def load_rl_dataframe() -> Optional[pd.DataFrame]:
+    base_df = load_master_df(DATA_PROCESSED)
+    hmm_df = load_hmm_probabilities(HMM_TIMESERIES)
+    if base_df is None or base_df.empty:
+        return None
+    if hmm_df is None or hmm_df.empty:
+        return None
+    needed_cols = ["hmm_state"] + HMM_PROB_COLS
+    for col in needed_cols:
+        if col not in hmm_df.columns:
+            return None
+
+    merged = base_df.join(hmm_df[needed_cols], how="inner")
+    return merged.sort_index()
+
+
+@st.cache_resource
+def load_rl_artifacts():
+    try:
+        from stable_baselines3 import DQN
+    except ImportError:
+        st.error("Falta stable-baselines3. Instala las dependencias del proyecto antes de usar el agente RL.")
+        st.stop()
+
+    if not RL_MODEL_HMM.exists():
+        st.error(f"No se encontrÇü el modelo RL entrenado: {RL_MODEL_HMM}")
+        st.stop()
+    if not RL_SCALER_PATH.exists():
+        st.error(f"No se encontrÇü el scaler del agente RL: {RL_SCALER_PATH}")
+        st.stop()
+
+    model = DQN.load(str(RL_MODEL_HMM))
+    scaler = joblib.load(RL_SCALER_PATH)
+    return model, scaler
+
+
+@st.cache_data
+def list_artifact_files(root: Path):
+    root = Path(root)
+    files = []
+    if not root.exists():
+        return files
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(root)
+            files.append({
+                "path": path,
+                "rel": str(rel),
+                "ext": path.suffix.lower(),
+                "size_kb": round(path.stat().st_size / 1024, 1)
+            })
+    return files
+
+
+@st.cache_data
+def load_artifact_csv(path: Path) -> Optional[pd.DataFrame]:
+    try:
+        df = pd.read_csv(path)
+        # Parse columnas tipo fecha si aplican
+        date_cols = [c for c in df.columns if "date" in c.lower()]
+        for c in date_cols:
+            try:
+                df[c] = pd.to_datetime(df[c])
+            except Exception:
+                pass
+        return df
+    except Exception as exc:
+        st.error(f"No se pudo leer el CSV {path}: {exc}")
+        return None
+
+
+@st.cache_data
+def load_artifact_image(path: Path) -> Optional[Image.Image]:
+    try:
+        return Image.open(path)
+    except Exception as exc:
+        st.error(f"No se pudo cargar la imagen {path}: {exc}")
+        return None
 
 # ==============================================================================
 # SIDEBAR - NAVEGACIÓN
@@ -67,6 +183,8 @@ page = st.sidebar.radio(
         "🏠 Home",
         "📈 EDA",
         "🏆 Comparativa de Modelos",
+        "Agente RL + HMM",
+        "📂 Artifacts",
         "🔄 Simulador HMM",
         "📋 Detalles Técnicos"
     ]
@@ -381,7 +499,165 @@ elif page == "🏆 Comparativa de Modelos":
         st.error(f"❌ Error general en la comparativa: {e}")
 
 # ==============================================================================
-# PÁGINA 4: SIMULADOR HMM (CORREGIDO)
+# PÁGINA 4: AGENTE RL + HMM (DECISIÓN)
+# ==============================================================================
+elif page == "Agente RL + HMM":
+    st.markdown('<div class="title-section">Agente RL + HMM - Decide Buy / Sell / Hold</div>', unsafe_allow_html=True)
+    st.markdown(
+        "Prueba rápidamente el agente entrenado (DQN + probabilidades del HMM) "
+        "para una fecha específica y obtén la acción sugerida."
+    )
+
+    rl_df = load_rl_dataframe()
+    if rl_df is None or rl_df.empty:
+        st.error(
+            "No se pudieron cargar los datos necesarios. Verifica que existan "
+            "`data/processed/master_df.csv` y `artifacts/hmm/hmm_probabilities_timeseries.csv`."
+        )
+    else:
+        missing_cols = [c for c in BASE_FEATURES + HMM_PROB_COLS if c not in rl_df.columns]
+        if missing_cols:
+            st.error(f"Faltan columnas requeridas para el agente RL: {missing_cols}")
+        else:
+            model, scaler = load_rl_artifacts()
+
+            min_date = rl_df.index.min().date()
+            max_date = rl_df.index.max().date()
+            chosen_date = st.date_input(
+                "Fecha a evaluar",
+                value=max_date,
+                min_value=min_date,
+                max_value=max_date,
+                help="Selecciona el día (dentro del rango de datos) para obtener la decisión del agente."
+            )
+            ts_date = pd.Timestamp(chosen_date)
+
+            if ts_date not in rl_df.index:
+                st.warning("No hay datos para esa fecha (posible fin de semana o feriado). Prueba otra fecha.")
+            else:
+                row = rl_df.loc[ts_date]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+
+                try:
+                    base_scaled = scaler.transform(row[BASE_FEATURES].values.reshape(1, -1))[0]
+                except Exception as exc:
+                    st.error(f"No se pudieron escalar las features: {exc}")
+                    st.stop()
+
+                obs = np.concatenate([base_scaled, row[HMM_PROB_COLS].values.astype(float)])
+                action, _ = model.predict(obs, deterministic=True)
+                action_int = int(action)
+                decision = ACTION_LABELS.get(action_int, f"Acción {action_int}")
+
+                top_state_idx = int(row[HMM_PROB_COLS].values.argmax())
+                top_state_prob = float(row[HMM_PROB_COLS[top_state_idx]])
+
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric("Decisión del agente", decision)
+                with col_b:
+                    if "close" in row.index:
+                        st.metric("Precio de cierre", f"${row['close']:.2f}")
+                with col_c:
+                    st.metric("Régimen más probable", f"Estado {top_state_idx}", f"{top_state_prob:.2%}")
+
+                st.markdown("### Probabilidades HMM del día")
+                prob_df = pd.DataFrame({
+                    "Probabilidad": row[HMM_PROB_COLS].values
+                }, index=[f"Estado {i}" for i in range(len(HMM_PROB_COLS))])
+                st.bar_chart(prob_df)
+
+                st.markdown("### Features utilizadas por el agente")
+                features_view = pd.DataFrame({
+                    "Feature": BASE_FEATURES,
+                    "Valor (sin escalar)": row[BASE_FEATURES].values,
+                    "Valor escalado": base_scaled
+                })
+                st.dataframe(features_view, use_container_width=True)
+
+# ==============================================================================
+# PÁGINA 5: EXPLORADOR DE ARTIFACTS
+# ==============================================================================
+elif page == "📂 Artifacts":
+    st.markdown('<div class="title-section">📂 Artefactos del proyecto</div>', unsafe_allow_html=True)
+    st.markdown("Explora los archivos generados en `artifacts/`: CSV, imágenes, modelos y otros.")
+
+    artifacts = list_artifact_files(ARTIFACTS_DIR)
+    if not artifacts:
+        st.warning("No hay archivos en la carpeta artifacts.")
+    else:
+        tab_csv, tab_imgs, tab_models, tab_other = st.tabs(["CSV / Series", "Imágenes", "Modelos y scalers", "Otros"])
+
+        # --- CSV ---
+        with tab_csv:
+            csv_files = [a for a in artifacts if a["ext"] == ".csv"]
+            if not csv_files:
+                st.info("No se encontraron CSV en artifacts.")
+            else:
+                names = [f"{c['rel']} ({c['size_kb']} KB)" for c in csv_files]
+                choice = st.selectbox("Selecciona un CSV", options=names, index=0)
+                selected = csv_files[names.index(choice)]
+                df_csv = load_artifact_csv(selected["path"])
+
+                st.caption(f"Ruta: `{selected['path']}`")
+                if df_csv is not None:
+                    st.write(f"Shape: {df_csv.shape}")
+                    st.dataframe(df_csv.head(200), use_container_width=True, height=400)
+
+                    # Intentar gráfico de series si hay columna fecha
+                    date_cols = [c for c in df_csv.columns if "date" in c.lower()]
+                    num_cols = [c for c in df_csv.columns if pd.api.types.is_numeric_dtype(df_csv[c])]
+                    if date_cols and num_cols:
+                        date_col = date_cols[0]
+                        st.markdown("### Serie de tiempo")
+                        y_cols = st.multiselect("Columnas numéricas a graficar", num_cols, default=num_cols[:1])
+                        if y_cols:
+                            chart_df = df_csv[[date_col] + y_cols].copy()
+                            chart_df = chart_df.sort_values(date_col)
+                            chart_df = chart_df.set_index(date_col)
+                            st.line_chart(chart_df)
+
+        # --- Imágenes ---
+        with tab_imgs:
+            img_files = [a for a in artifacts if a["ext"] in ARTIFACT_IMAGE_EXTS]
+            if not img_files:
+                st.info("No se encontraron imágenes (png/jpg) en artifacts.")
+            else:
+                names = [f"{i['rel']} ({i['size_kb']} KB)" for i in img_files]
+                choice = st.selectbox("Selecciona una imagen", options=names, index=0, key="img_select")
+                selected = img_files[names.index(choice)]
+                img = load_artifact_image(selected["path"])
+                st.caption(f"Ruta: `{selected['path']}`")
+                if img:
+                    st.image(img, use_container_width=True)
+
+        # --- Modelos y scalers ---
+        with tab_models:
+            model_exts = [".zip", ".joblib", ".pkl"]
+            model_files = [a for a in artifacts if a["ext"] in model_exts]
+            if not model_files:
+                st.info("No se encontraron modelos o scalers (.zip/.joblib/.pkl).")
+            else:
+                st.dataframe(
+                    pd.DataFrame(model_files)[["rel", "ext", "size_kb"]],
+                    use_container_width=True
+                )
+
+        # --- Otros ---
+        with tab_other:
+            known_exts = {".csv", ".png", ".jpg", ".jpeg", ".zip", ".joblib", ".pkl"}
+            other_files = [a for a in artifacts if a["ext"] not in known_exts]
+            if not other_files:
+                st.info("No hay otros tipos de archivos.")
+            else:
+                st.dataframe(
+                    pd.DataFrame(other_files)[["rel", "ext", "size_kb"]],
+                    use_container_width=True
+                )
+
+# ==============================================================================
+# PÁGINA 6: SIMULADOR HMM (CORREGIDO)
 # ==============================================================================
 elif page == "🔄 Simulador HMM":
     st.markdown('<div class="title-section">🔄 Simulador de Regímenes (HMM)</div>', unsafe_allow_html=True)
@@ -537,7 +813,7 @@ elif page == "🔄 Simulador HMM":
         st.error(f"❌ Error crítico en el módulo HMM: {e}")
 
 # ==============================================================================
-# PÁGINA 5: DETALLES TÉCNICOS
+# PÁGINA 6: DETALLES TÉCNICOS
 # ==============================================================================
 elif page == "📋 Detalles Técnicos":
     st.markdown('<div class="title-section">📋 Detalles Técnicos</div>', unsafe_allow_html=True)
