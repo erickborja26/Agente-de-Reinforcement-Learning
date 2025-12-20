@@ -39,7 +39,6 @@ data/**/daily/
 # Modelos entrenados / artifacts
 # =========================
 artifacts/
-models/
 *.pkl
 *.joblib
 
