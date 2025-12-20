@@ -11,7 +11,7 @@ yfinance>=0.2.40
 # ML / HMM
 scikit-learn>=1.4
 hmmlearn>=0.3.2
-
+xgboost>=1.7
 # RL
 gymnasium>=0.29
 stable-baselines3>=2.3.0
@@ -26,3 +26,11 @@ bcrpy>=0.2
 # Sentimiento con Transformers (opcional)
 transformers>=4.40
 sentencepiece>=0.2
+
+seaborn>=0.14
+
+# Dashboard
+streamlit>=1.28
+plotly>=5.17
+pillow>=10.0
+openpyxl>=3.1
