@@ -177,7 +177,7 @@ if page == "🏠 Home":
         st.error(f"❌ Error al cargar datos: {e}")
 
 # ==============================================================================
-# PÁGINA 2: ANÁLISIS EDA
+# PÁGINA 2: ANÁLISIS EDA (CORREGIDO)
 # ==============================================================================
 elif page == "📈 EDA":
     st.markdown('<div class="title-section">📈 Análisis Exploratorio de Datos (EDA)</div>', unsafe_allow_html=True)
@@ -202,7 +202,7 @@ elif page == "📈 EDA":
             st.image(
                 images[selected_image],
                 caption=selected_image,
-                use_column_width=True
+                use_container_width=True  # <--- CAMBIO AQUÍ
             )
             
             st.markdown("---")
@@ -212,132 +212,231 @@ elif page == "📈 EDA":
                 cols = st.columns(2)
                 for idx, (name, img) in enumerate(images.items()):
                     with cols[idx % 2]:
-                        st.image(img, caption=name, use_column_width=True)
+                        st.image(img, caption=name, use_container_width=True) # <--- CAMBIO AQUÍ
     
     except Exception as e:
         st.error(f"❌ Error al cargar gráficos: {e}")
 
 # ==============================================================================
-# PÁGINA 3: COMPARATIVA DE MODELOS
+# PÁGINA 3: COMPARATIVA DE MODELOS (CON LECTURA AUTOMÁTICA DE METRICS.CSV)
 # ==============================================================================
 elif page == "🏆 Comparativa de Modelos":
-    st.markdown('<div class="title-section">🏆 Benchmark de 10 Modelos</div>', unsafe_allow_html=True)
+    st.markdown('<div class="title-section">🏆 Benchmark: Supervisados vs RL</div>', unsafe_allow_html=True)
     
     try:
+        # 1. Cargar modelos supervisados (Excel)
         df_results = load_excel_results(RESULTS_EXCEL)
+        if df_results is not None:
+            df_results["Tipo"] = "Supervisado"
         
-        if df_results is not None and not df_results.empty:
-            st.markdown("### 📊 Tabla de Resultados")
+        # 2. CARGAR MÉTRICAS REALES DE RL (metrics.csv)
+        metrics_csv_path = ARTIFACTS_DIR / "metrics.csv"
+        df_rl = pd.DataFrame()
+
+        if metrics_csv_path.exists():
+            try:
+                # Leemos el CSV
+                df_rl_raw = pd.read_csv(metrics_csv_path)
+                
+                # --- LIMPIEZA Y ADAPTACIÓN DE COLUMNAS ---
+                # A veces el CSV guarda el nombre del modelo en la primera columna sin nombre o como index
+                # Intentamos detectar la columna del nombre
+                if 'Unnamed: 0' in df_rl_raw.columns:
+                    df_rl_raw = df_rl_raw.rename(columns={'Unnamed: 0': 'Modelo'})
+                elif 'Model' in df_rl_raw.columns:
+                    df_rl_raw = df_rl_raw.rename(columns={'Model': 'Modelo'})
+                
+                # Si no hay columna 'Modelo', asumimos que es el índice y lo reseteamos
+                if 'Modelo' not in df_rl_raw.columns:
+                     # Si la primera columna parece ser texto (nombres de modelos), la usamos
+                     if df_rl_raw.iloc[:, 0].dtype == object:
+                         df_rl_raw = df_rl_raw.rename(columns={df_rl_raw.columns[0]: 'Modelo'})
+                
+                # Normalizar nombres de métricas (Mapeo flexible)
+                # Tu dashboard espera: 'Sharpe Ratio', 'Cumulative Return', 'Max Drawdown'
+                # Tu CSV puede tener: 'Sharpe', 'Cumulative Return', 'Max Drawdown' (según tu log anterior)
+                column_mapping = {
+                    'Sharpe': 'Sharpe Ratio',
+                    'sharpe': 'Sharpe Ratio',
+                    'Sharpe Ratio': 'Sharpe Ratio',
+                    'Cumulative Return': 'Cumulative Return',
+                    'cumulative_return': 'Cumulative Return',
+                    'Max Drawdown': 'Max Drawdown',
+                    'max_drawdown': 'Max Drawdown'
+                }
+                df_rl_raw = df_rl_raw.rename(columns=column_mapping)
+                
+                # Seleccionar solo las columnas necesarias y asignar Tipo
+                required_cols = ['Modelo', 'Sharpe Ratio', 'Cumulative Return', 'Max Drawdown']
+                available_cols = [c for c in required_cols if c in df_rl_raw.columns]
+                
+                if 'Modelo' in available_cols:
+                    df_rl = df_rl_raw[available_cols].copy()
+                    df_rl["Tipo"] = "Reinforcement Learning"
+                    
+                    # Asegurar que sean numéricos
+                    cols_to_numeric = ['Sharpe Ratio', 'Cumulative Return', 'Max Drawdown']
+                    for col in cols_to_numeric:
+                        if col in df_rl.columns:
+                            df_rl[col] = pd.to_numeric(df_rl[col], errors='coerce')
+                    
+                    st.success(f"✅ Métricas de RL cargadas correctamente desde {metrics_csv_path.name}")
+                else:
+                    st.error(f"⚠️ El archivo metrics.csv existe pero no se pudo identificar la columna de 'Modelo'. Columnas encontradas: {list(df_rl_raw.columns)}")
             
-            # Ordenar por Sharpe Ratio
-            df_sorted = df_results.sort_values(
-                by="Sharpe Ratio",
-                ascending=False,
-                na_position='last'
-            )
+            except Exception as e:
+                st.error(f"❌ Error leyendo metrics.csv: {e}")
+        else:
+            st.warning(f"⚠️ No se encontró el archivo: {metrics_csv_path}. Verifica que run_pipeline.py lo haya generado en 'artifacts/'.")
+
+        # 3. UNIR DATOS (Supervisado + RL)
+        if not df_rl.empty and df_results is not None:
+            df_final = pd.concat([df_results, df_rl], ignore_index=True)
+        elif not df_rl.empty:
+            df_final = df_rl
+        elif df_results is not None:
+            df_final = df_results
+        else:
+            df_final = pd.DataFrame()
+
+        # 4. VISUALIZACIÓN
+        if not df_final.empty:
+            st.markdown("### 📊 Tabla General de Resultados")
             
-            # Mostrar tabla con formato
+            # Ordenar
+            if 'Sharpe Ratio' in df_final.columns:
+                df_sorted = df_final.sort_values(by="Sharpe Ratio", ascending=False)
+            else:
+                df_sorted = df_final
+            
+            # Formatear
             st.dataframe(
-                df_sorted,
+                df_sorted.style.format({
+                    "Sharpe Ratio": "{:.4f}",
+                    "Max Drawdown": "{:.2%}",
+                    "Cumulative Return": "{:.2%}"
+                }, na_rep="-"),
                 use_container_width=True,
                 height=400
             )
             
             st.markdown("---")
             
-            # Gráficos comparativos
             col1, col2 = st.columns(2)
             
-            with col1:
-                st.markdown("### 📈 Retorno Acumulado")
-                fig1 = px.bar(
-                    df_sorted,
-                    x='Modelo',
-                    y='Cumulative Return',
-                    color='Cumulative Return',
-                    color_continuous_scale='RdYlGn',
-                    title='Retorno Acumulado por Modelo',
-                    labels={'Cumulative Return': 'Retorno (%)'}
-                )
-                fig1.update_layout(height=400, xaxis_tickangle=-45)
-                st.plotly_chart(fig1, use_container_width=True)
+            # GRÁFICO 1: Retornos
+            if 'Cumulative Return' in df_final.columns:
+                with col1:
+                    st.markdown("### 📈 Retorno Acumulado")
+                    fig1 = px.bar(
+                        df_sorted,
+                        x='Modelo',
+                        y='Cumulative Return',
+                        color='Tipo',
+                        color_discrete_map={"Supervisado": "#1f77b4", "Reinforcement Learning": "#ff7f0e"},
+                        title='Comparativa de Retornos',
+                        text_auto='.1%'
+                    )
+                    fig1.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig1, use_container_width=True)
             
-            with col2:
-                st.markdown("### 📊 Sharpe Ratio")
-                fig2 = px.bar(
-                    df_sorted,
-                    x='Modelo',
-                    y='Sharpe Ratio',
-                    color='Sharpe Ratio',
-                    color_continuous_scale='Blues',
-                    title='Sharpe Ratio por Modelo (Mejor = Mayor)',
-                    labels={'Sharpe Ratio': 'Sharpe Ratio'}
-                )
-                fig2.update_layout(height=400, xaxis_tickangle=-45)
-                st.plotly_chart(fig2, use_container_width=True)
+            # GRÁFICO 2: Drawdown
+            if 'Max Drawdown' in df_final.columns:
+                with col2:
+                    st.markdown("### 🛡️ Gestión de Riesgo")
+                    fig2 = px.bar(
+                        df_sorted.sort_values(by="Max Drawdown", ascending=False),
+                        x='Modelo',
+                        y='Max Drawdown',
+                        color='Tipo',
+                        color_discrete_map={"Supervisado": "#1f77b4", "Reinforcement Learning": "#ff7f0e"},
+                        title='Caída Máxima (Drawdown)',
+                        text_auto='.1%'
+                    )
+                    fig2.update_layout(xaxis_tickangle=-45)
+                    st.plotly_chart(fig2, use_container_width=True)
             
-            st.markdown("---")
-            
-            # Scatter plot: Retorno vs Riesgo
-            col3, col4 = st.columns(2)
-            
-            with col3:
-                st.markdown("### ⚖️ Riesgo vs Retorno")
+            # GRÁFICO 3: Scatter
+            if 'Sharpe Ratio' in df_final.columns:
+                st.markdown("### ⚖️ Mapa de Riesgo vs Retorno")
                 fig3 = px.scatter(
-                    df_sorted,
+                    df_final,
                     x='Max Drawdown',
                     y='Cumulative Return',
-                    hover_name='Modelo',
                     color='Sharpe Ratio',
-                    size='Sharpe Ratio',
-                    color_continuous_scale='Viridis',
-                    title='Análisis Riesgo-Retorno',
-                    labels={
-                        'Max Drawdown': 'Max Drawdown (Riesgo)',
-                        'Cumulative Return': 'Retorno Acumulado'
-                    }
+                    symbol='Tipo',
+                    hover_name='Modelo',
+                    color_continuous_scale='RdYlGn',
+                    title='Frontera de Eficiencia',
                 )
-                fig3.update_layout(height=400)
+                fig3.update_traces(marker=dict(size=15, line=dict(width=1, color='DarkSlateGrey')))
+                fig3.add_hline(y=0, line_dash="dash", line_color="gray")
+                fig3.add_vline(x=0, line_dash="dash", line_color="gray")
                 st.plotly_chart(fig3, use_container_width=True)
-            
-            with col4:
-                st.markdown("### 🥇 Top 3 Modelos")
-                top3 = df_sorted.head(3)[['Modelo', 'Sharpe Ratio', 'Cumulative Return']]
-                st.dataframe(top3, use_container_width=True, height=200)
-                
-                st.markdown("### 📝 Interpretación")
-                st.info(
-                    "**Sharpe Ratio**: Mide el retorno ajustado por riesgo. "
-                    "Mayor es mejor.\n\n"
-                    "**Cumulative Return**: Ganancia/pérdida total acumulada.\n\n"
-                    "**Max Drawdown**: Peor caída desde un pico. Menor es mejor (menos negativo)."
-                )
+
         else:
-            st.warning("⚠️ No se encontró archivo de resultados.")
-            st.info(f"Ruta esperada: `{RESULTS_EXCEL}`")
-    
+            st.warning("⚠️ No hay datos válidos para mostrar en la comparativa.")
+
     except Exception as e:
-        st.error(f"❌ Error al cargar resultados: {e}")
+        st.error(f"❌ Error general en la comparativa: {e}")
 
 # ==============================================================================
-# PÁGINA 4: SIMULADOR HMM
+# PÁGINA 4: SIMULADOR HMM (CORREGIDO)
 # ==============================================================================
 elif page == "🔄 Simulador HMM":
     st.markdown('<div class="title-section">🔄 Simulador de Regímenes (HMM)</div>', unsafe_allow_html=True)
     
+    # Importación local para no romper el resto si falta la librería
+    try:
+        from hmmlearn.hmm import GaussianHMM
+    except ImportError:
+        st.error("⚠️ Falta la librería 'hmmlearn'. Instálala con: `pip install hmmlearn`")
+        st.stop()
+
     try:
         df = load_master_df(DATA_PROCESSED)
         
         if df is not None and not df.empty:
             st.markdown("""
             ### Descripción
-            El **Hidden Markov Model (HMM)** identifica regímenes ocultos del mercado:
-            - 🔴 **Bear** (Bajista): Tendencia negativa, mayor riesgo
-            - 🟡 **Sideways** (Lateral): Consolidación, movimiento lateral
-            - 🟢 **Bull** (Alcista): Tendencia positiva, menor riesgo
+            El sistema calcula automáticamente los regímenes de mercado basándose en los retornos y la volatilidad:
+            - 🔴 **Bear (Bajista):** Retornos negativos / Alta volatilidad.
+            - 🟡 **Sideways (Lateral):** Retornos cercanos a cero.
+            - 🟢 **Bull (Alcista):** Retornos positivos / Baja volatilidad relativa.
             """)
             
-            # Slider de rango de fechas
+            # --- LÓGICA DE CÁLCULO DE HMM EN TIEMPO REAL ---
+            if 'hmm_state' not in df.columns:
+                with st.spinner("Calculando regímenes de mercado (HMM)..."):
+                    # 1. Preparar datos para el HMM (Retornos y Volatilidad)
+                    # Aseguramos que no haya NaNs
+                    hmm_data = df[['ret', 'vol_20']].dropna()
+                    X = hmm_data.values
+
+                    # 2. Entrenar modelo
+                    model = GaussianHMM(n_components=3, covariance_type="diag", n_iter=100, random_state=42)
+                    model.fit(X)
+                    hidden_states = model.predict(X)
+
+                    # 3. Ordenar estados para que los colores coincidan (Bear=0, Bull=2)
+                    # Calculamos el retorno promedio de cada estado predicho
+                    means = []
+                    for i in range(3):
+                        means.append(hmm_data.iloc[hidden_states == i]['ret'].mean())
+                    
+                    # Ordenamos: Menor retorno -> Bear (0), Mayor retorno -> Bull (2)
+                    order = np.argsort(means)
+                    mapping = {old: new for new, old in enumerate(order)}
+                    
+                    # Reasignamos los estados ordenados
+                    mapped_states = np.array([mapping[s] for s in hidden_states])
+                    
+                    # Guardamos en el DF (alineando índices)
+                    df.loc[hmm_data.index, 'hmm_state'] = mapped_states
+                
+                st.success("✅ Regímenes calculados exitosamente.")
+
+            # --- INTERFAZ GRÁFICA ---
             st.markdown("---")
             col1, col2 = st.columns(2)
             
@@ -353,100 +452,89 @@ elif page == "🔄 Simulador HMM":
                     value=df.index[-1].date() if isinstance(df.index[-1], pd.Timestamp) else df.index[-1]
                 )
             
-            # Filtrar datos en el rango
+            # Filtrar datos
             mask = (df.index >= str(start_date)) & (df.index <= str(end_date))
             df_filtered = df.loc[mask].copy()
             
             if df_filtered.empty:
                 st.warning("⚠️ No hay datos en el rango seleccionado.")
             else:
-                # Gráfico interactivo con regímenes
+                # --- GRÁFICO ---
                 st.markdown("### 📈 Precio con Regímenes de Mercado")
                 
-                # Crear figura con Plotly
                 fig = go.Figure()
                 
-                # Agregar línea de precio
-                fig.add_trace(go.Scatter(
-                    x=df_filtered.index,
-                    y=df_filtered['close'],
-                    mode='lines',
-                    name='Precio (Close)',
-                    line=dict(color='#1f77b4', width=2),
-                    hovertemplate='<b>%{x|%Y-%m-%d}</b><br>Precio: $%{y:.2f}<extra></extra>'
-                ))
+                # Definir colores explícitos para asegurar consistencia
+                # 0: Bear (Rojo), 1: Sideways (Amarillo/Gris), 2: Bull (Verde)
+                color_map = {0: 'rgba(255, 0, 0, 0.15)', 1: 'rgba(255, 165, 0, 0.15)', 2: 'rgba(0, 255, 0, 0.15)'}
+                label_map = {0: 'Bear (Bajista)', 1: 'Sideways (Lateral)', 2: 'Bull (Alcista)'}
                 
-                # Si existe columna hmm_state, colorear el fondo
-                if 'hmm_state' in df_filtered.columns:
-                    regime_colors = get_regime_colors()
-                    
-                    # Agregar áreas de color según régimen
-                    for state in df_filtered['hmm_state'].unique():
-                        if pd.isna(state):
-                            continue
-                        
-                        state_mask = df_filtered['hmm_state'] == state
-                        state_data = df_filtered[state_mask]
-                        
-                        # Determinar etiqueta
-                        state_map = {0: 'Bear', 1: 'Sideways', 2: 'Bull'}
-                        label = state_map.get(int(state), f'State {state}')
-                        
-                        # Agregar scatter invisible para la leyenda
+                # Dibujar áreas de fondo
+                # Truco: Usamos bar charts invisibles o shapes. Aquí usamos shapes para mejor performance.
+                shapes = []
+                
+                # Iterar sobre segmentos contiguos para no crear miles de trazos
+                # (Simplificación: dibujamos puntos coloreados detrás de la línea)
+                
+                # Método alternativo: Scatter con línea de precio encima
+                for state in [0, 1, 2]:
+                    state_data = df_filtered[df_filtered['hmm_state'] == state]
+                    if not state_data.empty:
                         fig.add_trace(go.Scatter(
                             x=state_data.index,
                             y=state_data['close'],
                             mode='markers',
-                            marker=dict(size=0),
-                            name=label,
-                            showlegend=True,
-                            hoverinfo='skip'
+                            marker=dict(size=6, color=color_map[state].replace('0.15', '1')), # Color sólido para los puntos
+                            name=label_map[state],
+                            showlegend=True
                         ))
-                
+
+                # Línea de precio principal (negra y fina para conectar)
+                fig.add_trace(go.Scatter(
+                    x=df_filtered.index,
+                    y=df_filtered['close'],
+                    mode='lines',
+                    line=dict(color='black', width=1),
+                    name='Precio',
+                    opacity=0.5
+                ))
+
                 fig.update_layout(
-                    title='Precio EPU con Regímenes HMM',
+                    title='Clasificación de Regímenes HMM',
                     xaxis_title='Fecha',
                     yaxis_title='Precio ($)',
-                    hovermode='x unified',
                     height=500,
-                    template='plotly_white'
+                    template='plotly_white',
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
                 st.markdown("---")
                 
-                # Estadísticas por régimen
-                st.markdown("### 📊 Estadísticas por Régimen")
+                # --- ESTADÍSTICAS ---
+                st.markdown("### 📊 Estadísticas por Régimen Detectado")
                 
-                if 'hmm_state' in df_filtered.columns:
-                    regime_stats = []
-                    state_map = {0: 'Bear', 1: 'Sideways', 2: 'Bull'}
-                    
-                    for state in sorted(df_filtered['hmm_state'].unique()):
-                        if pd.isna(state):
-                            continue
-                        
-                        state_data = df_filtered[df_filtered['hmm_state'] == state]
-                        label = state_map.get(int(state), f'State {state}')
-                        
+                regime_stats = []
+                for state in [0, 1, 2]:
+                    state_data = df_filtered[df_filtered['hmm_state'] == state]
+                    if not state_data.empty:
                         regime_stats.append({
-                            'Régimen': label,
-                            'Días': len(state_data),
-                            'Precio Medio': f"${state_data['close'].mean():.2f}",
-                            'Retorno Medio': f"{state_data['ret'].mean():.4f}",
-                            'Volatilidad': f"{state_data['ret'].std():.4f}"
+                            'Régimen': label_map[state],
+                            'Días en Régimen': len(state_data),
+                            '% del Tiempo': f"{(len(state_data)/len(df_filtered)*100):.1f}%",
+                            'Retorno Promedio Diario': f"{state_data['ret'].mean()*100:.4f}%",
+                            'Volatilidad (Std)': f"{state_data['ret'].std():.4f}"
                         })
-                    
-                    df_stats = pd.DataFrame(regime_stats)
-                    st.dataframe(df_stats, use_container_width=True)
-                else:
-                    st.info("ℹ️ La columna 'hmm_state' no está disponible en los datos.")
+                
+                if regime_stats:
+                    st.dataframe(pd.DataFrame(regime_stats), use_container_width=True)
+
         else:
             st.error("❌ Error al cargar datos maestros.")
     
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"❌ Error crítico en el módulo HMM: {e}")
 
 # ==============================================================================
 # PÁGINA 5: DETALLES TÉCNICOS
