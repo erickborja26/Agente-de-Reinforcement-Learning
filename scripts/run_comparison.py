@@ -1,125 +1,129 @@
-import sys
-import os
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import sys
+import os
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
+# --- 1. CONFIGURACIÓN DE RUTAS ---
+# Añadimos la carpeta raíz al path para poder importar src.models
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data.build_dataset import build_unified_dataset
-from src.benchmarks import run_benchmark_predictions
+# Intentamos importar la función de predicción de tus modelos
+try:
+    from src.models.modelos import run_benchmark_predictions
+except ImportError as e:
+    print(f"ERROR DE IMPORTACIÓN: {e}")
+    print("Asegúrate de que existe el archivo: src/models/modelos.py")
+    sys.exit(1)
 
-# Configuración de rutas
-RL_RESULTS_PATH = "data/rl_agent_history.csv"  
-OUTPUT_IMG_PATH = "artifacts/comparativa_final.png"
-OUTPUT_METRICS_PATH = "artifacts/tabla_metricas.csv"
+# Ruta al archivo que generó run_pipeline.py
+# Ajusta si tu archivo tiene otro nombre, pero según tus logs es master_df.csv
+DATA_PATH = "../data/processed/master_df.csv" 
+TARGET_COL = "close"
+
+# --- 2. FUNCIONES DE EVALUACIÓN ---
+def calculate_financial_metrics(df_comparison):
+    """
+    Calcula si los modelos ganan dinero.
+    Estrategia: Si Predicción(t+1) > Precio(t) -> COMPRA (Signal=1), sino CASH (Signal=0).
+    """
+    metrics = []
+    
+    real_next_close = df_comparison['y_real_next'] 
+    current_close = df_comparison['current_close']
+    
+    # Retorno del mercado (Log return)
+    market_return = np.log(real_next_close / current_close)
+    
+    # Identificar columnas que son modelos (excluyendo las columnas de precios reales)
+    model_cols = [c for c in df_comparison.columns if c not in ['y_real_next', 'current_close']]
+    
+    for model_name in model_cols:
+        preds = df_comparison[model_name]
+        
+        # Validar datos (quitar NaNs del inicio)
+        mask = ~np.isnan(preds) & ~np.isnan(real_next_close)
+        if not mask.any():
+            continue
+
+        # --- Métricas de Error ---
+        rmse = np.sqrt(mean_squared_error(real_next_close[mask], preds[mask]))
+        mae = mean_absolute_error(real_next_close[mask], preds[mask])
+        r2 = r2_score(real_next_close[mask], preds[mask])
+        
+        # --- Métricas Financieras ---
+        # Si predice subida > precio de hoy, compramos
+        signals = np.where(preds[mask] > current_close[mask], 1, 0)
+        strategy_rets = signals * market_return[mask]
+        cumulative_return = np.sum(strategy_rets)
+        
+        metrics.append({
+            "Modelo": model_name,
+            "RMSE": round(rmse, 4),
+            "MAE": round(mae, 4),
+            "R2": round(r2, 4),
+            "Retorno Acumulado": round(cumulative_return, 4)
+        })
+        
+    return pd.DataFrame(metrics)
 
 def main():
-    # 1. CARGAR DATOS (La misma fuente que usó el RL)
-    print("1. Cargando Dataset Maestro...")
-    df = build_unified_dataset(ticker="SPY")
+    print("--- INICIANDO COMPARATIVA DE 10 MODELOS ---")
     
-    if df is None or df.empty:
-        print("Error crítico: No hay datos.")
-        return
+    # 1. Cargar Datos
+    try:
+        df = pd.read_csv(DATA_PATH)
+    except FileNotFoundError:
+        # Intentar ruta absoluta si falla la relativa
+        abs_path = os.path.join(os.getcwd(), "data", "processed", "master_df.csv")
+        if os.path.exists(abs_path):
+            df = pd.read_csv(abs_path)
+        else:
+            print(f"ERROR: No se encuentra el archivo de datos en {DATA_PATH} ni en {abs_path}")
+            return
 
-    # Preparar X e y
-    df['Target'] = df['Close'].shift(-1)   # Predecir cierre mañana
-    df['Log_Ret'] = np.log(df['Close'] / df['Close'].shift(1)) # Retorno real
-    df.dropna(inplace=True)
+    # Limpieza de nombres de columnas
+    df.columns = df.columns.str.strip()
     
-    X = df.drop(columns=['Target', 'Log_Ret'])
-    y = df['Target']
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+    df.sort_index(inplace=True)
+    df = df.dropna()
+    
+    print(f"Datos cargados: {df.shape}")
 
-    # 2. EJECUTAR LOS 10 MODELOS
-    print("\n2. Ejecutando Modelos Supervisados...")
-    df_preds = run_benchmark_predictions(X, y)
+    # 2. Preparar X e y para la predicción
+    # Objetivo: Predecir el 'close' de MAÑANA (t+1) usando datos de HOY (t)
     
-    # 3. CONVERTIR PREDICCIONES A CURVAS DE EQUIDAD (DINERO)
-    print("\n3. Calculando Curvas de Equidad...")
-    equity = pd.DataFrame(index=df_preds.index)
-    equity['Buy_Hold'] = (1 + df['Log_Ret']).cumprod()
+    y_target = df[TARGET_COL].shift(-1) # Lo que queremos predecir (futuro)
+    X_features = df.copy()              # Lo que sabemos hoy
     
-    for col in df_preds.columns:
-        # Señal: 1 si predice subida, 0 si no
-        # Usamos shift(1) en la señal porque la predicción de hoy es para mañana
-        signal = np.where(df_preds[col] > X['Close'], 1, 0)
-        
-        # Retorno Estrategia = Retorno Real * Señal
-        equity[col] = (1 + (df['Log_Ret'] * signal)).cumprod()
-
-    # 4. INTEGRAR AGENTE RL
-    print("\n4. Buscando resultados del Agente RL...")
-    if os.path.exists(RL_RESULTS_PATH):
-        try:
-            df_rl = pd.read_csv(RL_RESULTS_PATH)
-            # Asumiendo que el script RL guardó 'Date' y 'Portfolio_Value'
-            df_rl['Date'] = pd.to_datetime(df_rl['Date'])
-            df_rl.set_index('Date', inplace=True)
-            
-            # Normalizar a base 1.0 (Retorno Acumulado)
-            start_val = df_rl['Portfolio_Value'].iloc[0]
-            rl_curve = df_rl['Portfolio_Value'] / start_val
-            
-            # Unir (Left join para respetar fechas del benchmark)
-            equity = equity.join(rl_curve.rename("Agente_RL"), how='left')
-            print("   -> Agente RL integrado exitosamente.")
-        except Exception as e:
-            print(f"   -> Error leyendo RL: {e}")
-    else:
-        print(f"   -> [AVISO] No se encontró {RL_RESULTS_PATH}. Se omitirá el RL.")
-
-    # 5. GENERAR REPORTE Y GRÁFICOS
-    print("\n5. Guardando resultados...")
+    # Eliminar la última fila (porque no tiene futuro conocido)
+    X_features = X_features.iloc[:-1]
+    y_target = y_target.iloc[:-1]
     
-    # A. Tabla de Métricas
-    resumen = []
-    for col in equity.columns:
-        if equity[col].count() > 0:
-            total_ret = (equity[col].iloc[-1] - 1) * 100
-            # Sharpe anualizado simple
-            daily_ret = equity[col].pct_change()
-            sharpe = (daily_ret.mean() / daily_ret.std()) * np.sqrt(252)
-            
-            resumen.append({
-                "Modelo": col,
-                "Retorno Total %": round(total_ret, 2),
-                "Sharpe Ratio": round(sharpe, 2)
-            })
+    # 3. Ejecutar Predicciones (Usando tu modelos.py)
+    print("Ejecutando validación cruzada (esto puede tardar)...")
+    df_preds = run_benchmark_predictions(X_features, y_target, n_splits=5)
     
-    df_metrics = pd.DataFrame(resumen).sort_values("Retorno Total %", ascending=False)
-    print(df_metrics)
-    df_metrics.to_csv(OUTPUT_METRICS_PATH, index=False)
+    # 4. Consolidar para evaluación
+    df_eval = df_preds.copy()
+    df_eval['y_real_next'] = y_target
+    df_eval['current_close'] = X_features[TARGET_COL] # Precio base de hoy
     
-    # B. Gráfico
-    plt.figure(figsize=(14, 8))
+    # 5. Calcular Resultados
+    results = calculate_financial_metrics(df_eval)
     
-    # Graficar Buy & Hold
-    plt.plot(equity['Buy_Hold'], label='Buy & Hold', color='black', ls='--', alpha=0.5)
+    # Ordenar por menor error (RMSE)
+    results = results.sort_values(by="RMSE")
     
-    # Graficar Agente RL (Destacado)
-    if 'Agente_RL' in equity.columns:
-        plt.plot(equity['Agente_RL'], label='🤖 Agente RL', color='blue', linewidth=2.5)
-        
-    # Graficar el MEJOR modelo supervisado
-    best_ml = df_metrics[~df_metrics['Modelo'].isin(['Buy_Hold', 'Agente_RL'])]['Modelo'].iloc[0]
-    plt.plot(equity[best_ml], label=f'Mejor ML ({best_ml})', color='green', linewidth=2)
+    print("\n=== TABLA DE RESULTADOS ===")
+    print(results)
     
-    # Graficar el resto en gris
-    for col in equity.columns:
-        if col not in ['Buy_Hold', 'Agente_RL', best_ml]:
-            plt.plot(equity[col], color='gray', alpha=0.1)
-
-    plt.title("Comparativa Final: RL vs Modelos Supervisados")
-    plt.ylabel("Crecimiento ($1 invertido)")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # Guardar imagen en lugar de mostrarla (más seguro en scripts)
-    os.makedirs(os.path.dirname(OUTPUT_IMG_PATH), exist_ok=True)
-    plt.savefig(OUTPUT_IMG_PATH)
-    print(f"\n Gráfico guardado en: {OUTPUT_IMG_PATH}")
-    print(f" Métricas guardadas en: {OUTPUT_METRICS_PATH}")
+    # Guardar Excel
+    results.to_excel("resultados_10_modelos.xlsx", index=False)
+    print("\nArchivo guardado: resultados_10_modelos.xlsx")
 
 if __name__ == "__main__":
     main()
